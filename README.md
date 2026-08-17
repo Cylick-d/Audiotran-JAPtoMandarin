@@ -61,6 +61,10 @@ python -m audiotran
 
 The application now opens the PySide6 workspace window directly. Import audio, an image, and an optional script; use `Run ASR`, `Align Script`, `Translate`, and `Export` to drive the first-release workflow.
 
+## Project Files
+
+Saved project JSON includes `schema_version: 1`. Unversioned projects from the initial release are migrated on load with defaults for missing optional script, cue text, confidence, source, review, and settings fields. Files from newer schema versions or files with unknown project/cue fields are rejected rather than silently discarding data.
+
 ## Packaging
 
 Build the Windows executable with:

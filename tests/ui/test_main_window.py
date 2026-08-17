@@ -6,6 +6,7 @@ import threading
 import time
 
 import pytest
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QPushButton, QRadioButton, QSplitter
 
 from audiotran.app import create_application
@@ -124,21 +125,35 @@ class FakeExportService:
         return {"video": output_path}
 
 
+class FakePlaybackService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, float, float]] = []
+
+    def play(self, audio_path: Path, start: float, end: float) -> None:
+        self.calls.append((Path(audio_path), start, end))
+
+
 def build_window(
     *,
     project_service: FakeProjectService | None = None,
     recognition_service: FakeRecognitionService | None = None,
     translation_service: FakeTranslationService | None = None,
     export_service: FakeExportService | None = None,
+    playback_service: FakePlaybackService | None = None,
 ):
     from audiotran.ui.main_window import MainWindow
 
     create_application(["audiotran-ui-test"])
+    services = {
+        "project_service": project_service or FakeProjectService(),
+        "recognition_service": recognition_service or FakeRecognitionService(),
+        "translation_service": translation_service or FakeTranslationService(),
+        "export_service": export_service or FakeExportService(),
+    }
+    if playback_service is not None:
+        services["playback_service"] = playback_service
     window = MainWindow(
-        project_service=project_service or FakeProjectService(),
-        recognition_service=recognition_service or FakeRecognitionService(),
-        translation_service=translation_service or FakeTranslationService(),
-        export_service=export_service or FakeExportService(),
+        **services,
     )
     return window
 
@@ -344,3 +359,39 @@ def test_asr_worker_applies_result_and_marks_last_successful_stage():
     assert window.last_successful_stage == "asr"
     assert window.project.cues[0].japanese_recognized == "from worker"
     assert "Completed asr" in window.statusBar().currentMessage()
+
+
+def test_play_current_cue_uses_selected_audio_and_cue_range():
+    playback_service = FakePlaybackService()
+    window = build_window(playback_service=playback_service)
+    window.project = make_project(cues=[make_cue(cue_id=7)])
+    window.project.audio_path = "selected-audio.mp3"
+    window._refresh_project_view()
+    window.subtitle_table.selectRow(0)
+
+    window.play_current_cue()
+
+    assert playback_service.calls == [(Path("selected-audio.mp3"), 0.0, 2.0)]
+    assert "Previewing cue 7" in window.statusBar().currentMessage()
+
+
+def test_close_event_is_ignored_until_worker_thread_finishes():
+    translation_service = FakeTranslationService()
+    translation_service.block = True
+    window = build_window(translation_service=translation_service)
+    window.project = make_project(cues=[make_cue()])
+    window._refresh_project_view()
+    window.run_translation()
+    wait_until(translation_service.started_event.is_set)
+
+    blocked_event = QCloseEvent()
+    window.closeEvent(blocked_event)
+    close_was_accepted = blocked_event.isAccepted()
+
+    translation_service.release_event.set()
+    wait_until(lambda: window._worker_thread is None)
+
+    assert close_was_accepted is False
+    finished_event = QCloseEvent()
+    window.closeEvent(finished_event)
+    assert finished_event.isAccepted() is True

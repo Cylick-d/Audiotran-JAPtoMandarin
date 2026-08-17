@@ -113,3 +113,31 @@ def test_render_ass_renders_chinese_only_without_japanese_line():
     assert "Dialogue: 0,0:01:01.00,0:01:02.35,Default,,0,0,0,,第二行" in rendered
     assert "最初の行\\N第一行" not in rendered
     assert "brace\\{test\\}\\\\tail\\N第二行" not in rendered
+
+
+def test_bilingual_renderers_fall_back_to_recognized_text_for_asr_only_cues():
+    from audiotran.export.subtitles import SubtitleStyle, render_ass, render_srt
+
+    cue = SubtitleCue(
+        id=1,
+        start=0.0,
+        end=1.0,
+        japanese_script="",
+        japanese_recognized="ASR recognized text",
+        chinese="translated text",
+        confidence=None,
+        source="asr",
+        reviewed=False,
+    )
+    style = SubtitleStyle(
+        font_name="Arial",
+        font_size=28,
+        primary_color="&H00FFFFFF",
+        outline_color="&H00000000",
+        back_color="&H00000000",
+    )
+
+    assert "ASR recognized text\ntranslated text" in render_srt([cue], mode="bilingual")
+    assert "ASR recognized text\\Ntranslated text" in render_ass(
+        [cue], mode="bilingual", style=style
+    )

@@ -76,12 +76,18 @@ class PipelineFacade:
     def load_script(self, path: Path) -> str:
         return self._script_loader(Path(path))
 
+    def probe_media(self, path: Path):
+        return self._media_probe(Path(path))
+
     def transcribe(self, path: Path) -> list[SubtitleCue]:
-        return self._recognizer.transcribe(Path(path))
+        media_path = Path(path)
+        self.probe_media(media_path)
+        return self._recognizer.transcribe(media_path)
 
     def align_script(self, project: Project, script_text: str) -> Project:
         updated = self._copy_project(project)
-        updated.cues = align_script(segment_text(script_text), self.transcribe(Path(updated.audio_path)))
+        recognized_cues = updated.cues or self.transcribe(Path(updated.audio_path))
+        updated.cues = align_script(segment_text(script_text), recognized_cues)
         return updated
 
     def align_project(self, project: Project) -> Project:
@@ -159,8 +165,6 @@ class PipelineFacade:
         glossary: dict[str, str] | None = None,
         style: SubtitleStyle | None = None,
     ) -> PipelineArtifacts:
-        audio_path = Path(project.audio_path)
-        self._media_probe(audio_path)
         processed = self.build_cues(project)
         translated = self.translate_project(processed, glossary=glossary)
         return self.export_project(

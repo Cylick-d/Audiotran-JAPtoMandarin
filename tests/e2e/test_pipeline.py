@@ -208,3 +208,60 @@ def test_pipeline_falls_back_to_asr_when_project_has_no_script(tmp_path: Path):
     assert [cue.japanese_recognized for cue in reopened.cues] == ["そのまま", "続き"]
     assert [cue.chinese for cue in reopened.cues] == ["Unchanged", "Continued"]
     assert [cue.source for cue in reopened.cues] == ["asr", "asr"]
+
+
+def test_align_script_reuses_existing_cues_without_transcribing():
+    from audiotran.pipeline import PipelineFacade
+
+    existing_cue = make_cue(1, 4.0, 6.5, "recognized text")
+    existing_cue.japanese_script = "old script"
+    existing_cue.chinese = "translated text"
+    existing_cue.reviewed = True
+    recognizer = FakeRecognizer(cues=[make_cue(99, 0.0, 1.0, "new ASR output")], calls=[])
+    pipeline = PipelineFacade(
+        recognizer=recognizer,
+        translator=FakeTranslator(outputs=[], requests=[]),
+        media_probe=FakeProbe(calls=[]),
+    )
+    project = Project(
+        audio_path="audio.wav",
+        image_path="cover.png",
+        script_path="script.txt",
+        cues=[existing_cue],
+        settings={"display_mode": "bilingual"},
+    )
+
+    aligned = pipeline.align_script(project, "recognized text")
+
+    assert recognizer.calls == []
+    assert len(aligned.cues) == 1
+    assert aligned.cues[0].start == 4.0
+    assert aligned.cues[0].end == 6.5
+    assert aligned.cues[0].japanese_recognized == "recognized text"
+    assert aligned.cues[0].japanese_script == "recognized text"
+    assert aligned.cues[0].chinese == "translated text"
+    assert aligned.cues[0].reviewed is True
+
+
+def test_transcribe_probes_media_before_recognition_for_ui_service_calls():
+    from audiotran.pipeline import PipelineFacade
+
+    events: list[str] = []
+
+    class OrderedRecognizer:
+        def transcribe(self, path: Path) -> list[SubtitleCue]:
+            events.append(f"recognize:{path}")
+            return []
+
+    def ordered_probe(path: Path) -> MediaInfo:
+        events.append(f"probe:{path}")
+        return MediaInfo(duration=1.0, sample_rate=48_000, channels=2, format_name="wav")
+
+    pipeline = PipelineFacade(
+        recognizer=OrderedRecognizer(),
+        translator=FakeTranslator(outputs=[], requests=[]),
+        media_probe=ordered_probe,
+    )
+
+    assert pipeline.transcribe(Path("voice.wav")) == []
+    assert events == ["probe:voice.wav", "recognize:voice.wav"]

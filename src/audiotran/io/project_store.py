@@ -9,6 +9,27 @@ from typing import Any
 
 from audiotran.domain.models import Project, SubtitleCue
 
+CURRENT_PROJECT_SCHEMA_VERSION = 1
+PROJECT_FIELDS = {
+    "schema_version",
+    "audio_path",
+    "image_path",
+    "script_path",
+    "cues",
+    "settings",
+}
+CUE_FIELDS = {
+    "id",
+    "start",
+    "end",
+    "japanese_script",
+    "japanese_recognized",
+    "chinese",
+    "confidence",
+    "source",
+    "reviewed",
+}
+
 
 class ProjectFormatError(ValueError):
     def __init__(self, path: Path):
@@ -48,13 +69,14 @@ def load_project(path: Path) -> Project:
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return _project_from_payload(payload, path)
+        return _project_from_payload(_migrate_payload(payload, path), path)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         raise ProjectFormatError(path) from None
 
 
 def _project_to_payload(project: Project) -> dict[str, Any]:
     return {
+        "schema_version": CURRENT_PROJECT_SCHEMA_VERSION,
         "audio_path": project.audio_path,
         "image_path": project.image_path,
         "script_path": project.script_path,
@@ -69,6 +91,11 @@ def _cue_to_payload(cue: SubtitleCue) -> dict[str, Any]:
 
 def _project_from_payload(payload: Any, path: Path) -> Project:
     if not isinstance(payload, dict):
+        raise ProjectFormatError(path)
+    _reject_unknown_fields(payload, PROJECT_FIELDS, path)
+
+    schema_version = _require_type(payload, "schema_version", int, reject_bool=True)
+    if schema_version != CURRENT_PROJECT_SCHEMA_VERSION:
         raise ProjectFormatError(path)
 
     audio_path = _require_type(payload, "audio_path", str)
@@ -92,6 +119,7 @@ def _project_from_payload(payload: Any, path: Path) -> Project:
 def _cue_from_payload(payload: Any, path: Path) -> SubtitleCue:
     if not isinstance(payload, dict):
         raise ProjectFormatError(path)
+    _reject_unknown_fields(payload, CUE_FIELDS, path)
 
     source = _require_type(payload, "source", str)
     if source not in {"script", "asr"}:
@@ -138,3 +166,46 @@ def _require_type(
 
 def _is_valid_number(value: Any) -> bool:
     return isinstance(value, (float, int)) and not isinstance(value, bool)
+
+
+def _migrate_payload(payload: Any, path: Path) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProjectFormatError(path)
+
+    schema_version = payload.get("schema_version", 0)
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool):
+        raise ProjectFormatError(path)
+    if schema_version == CURRENT_PROJECT_SCHEMA_VERSION:
+        return dict(payload)
+    if schema_version != 0:
+        raise ProjectFormatError(path)
+
+    migrated = dict(payload)
+    migrated["schema_version"] = CURRENT_PROJECT_SCHEMA_VERSION
+    migrated.setdefault("script_path", None)
+    migrated.setdefault("cues", [])
+    migrated.setdefault("settings", {})
+
+    cues = migrated["cues"]
+    if isinstance(cues, list):
+        migrated["cues"] = [_migrate_legacy_cue(cue) for cue in cues]
+    return migrated
+
+
+def _migrate_legacy_cue(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+
+    migrated = dict(payload)
+    migrated.setdefault("japanese_script", "")
+    migrated.setdefault("japanese_recognized", "")
+    migrated.setdefault("chinese", "")
+    migrated.setdefault("confidence", None)
+    migrated.setdefault("source", "asr")
+    migrated.setdefault("reviewed", False)
+    return migrated
+
+
+def _reject_unknown_fields(payload: dict[str, Any], allowed: set[str], path: Path) -> None:
+    if set(payload) - allowed:
+        raise ProjectFormatError(path)

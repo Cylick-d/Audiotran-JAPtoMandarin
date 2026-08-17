@@ -86,7 +86,8 @@ def _ass_bool(value: bool) -> int:
 
 
 def _render_text(cue: SubtitleCue, mode: SubtitleMode, srt: bool) -> str:
-    lines = [cue.chinese] if mode == "zh" else [cue.japanese_script, cue.chinese]
+    japanese = cue.japanese_script or cue.japanese_recognized
+    lines = [cue.chinese] if mode == "zh" else [japanese, cue.chinese]
     if srt:
         return "\n".join(lines)
     return "\\N".join(_escape_ass_text(line) for line in lines)

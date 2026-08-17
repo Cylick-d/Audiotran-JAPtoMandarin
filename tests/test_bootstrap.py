@@ -1,12 +1,29 @@
 import json
 import os
 from pathlib import Path
+import runpy
+
+import pytest
 
 
 def test_package_imports():
     import audiotran
 
     assert audiotran.__version__
+
+
+def test_packaged_launcher_runs_as_a_top_level_script_without_starting_gui(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import audiotran.app
+
+    monkeypatch.setattr(audiotran.app, "main", lambda: 23)
+    launcher = Path(__file__).parents[1] / "src" / "audiotran" / "__main__.py"
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(str(launcher), run_name="__main__")
+
+    assert exc_info.value.code == 23
 
 
 def test_create_application_returns_qapplication():
@@ -147,3 +164,32 @@ def test_load_settings_preserves_named_tools_and_model_aliases(tmp_path: Path):
     assert settings["ffmpeg"]["ffmpeg_bin"] == "ffmpeg"
     assert settings["ffmpeg"]["ffprobe_bin"] == "ffprobe"
     assert settings["recognition"]["model_name"] == "small"
+
+
+def test_example_settings_paths_resolve_to_the_documented_release_tree(tmp_path: Path):
+    from audiotran.app import load_settings
+
+    release_dir = tmp_path / "audiotran"
+    settings_dir = release_dir / "config"
+    settings_dir.mkdir(parents=True)
+    example_path = Path(__file__).parents[1] / "config" / "example.settings.json"
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text(example_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    settings = load_settings(settings_path)
+
+    assert settings["ffmpeg"]["ffmpeg_bin"] == str(
+        (release_dir / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe").resolve()
+    )
+    assert settings["ffmpeg"]["ffprobe_bin"] == str(
+        (release_dir / "tools" / "ffmpeg" / "bin" / "ffprobe.exe").resolve()
+    )
+    assert settings["recognition"]["model_name"] == str(
+        (release_dir / "models" / "faster-whisper-small").resolve()
+    )
+    assert settings["translation"]["model_path"] == str(
+        (release_dir / "models" / "translation").resolve()
+    )
+    assert settings["translation"]["loader_module"] == str(
+        (release_dir / "models" / "translation" / "loader.py").resolve()
+    )

@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal, Slot
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -21,6 +22,7 @@ from audiotran.domain import Project, SubtitleCue
 from audiotran.export import SubtitleStyle, render_ass, render_srt
 from audiotran.io.project_store import load_project, save_project
 from audiotran.io.script_reader import read_script
+from audiotran.media import LocalPlaybackService
 from audiotran.subtitles import align_script, segment_text, split_long_cue
 from audiotran.translation import TranslationRequest
 
@@ -41,12 +43,14 @@ class MainWindow(QMainWindow):
         recognition_service,
         translation_service,
         export_service,
+        playback_service=None,
     ) -> None:
         super().__init__()
         self.project_service = project_service
         self.recognition_service = recognition_service
         self.translation_service = translation_service
         self.export_service = export_service
+        self.playback_service = playback_service
 
         self.project = self._empty_project()
         self.current_project_path: Path | None = None
@@ -413,9 +417,26 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.project.cues):
             self._set_status("Select a cue to preview it")
             return
+        if not self.project.audio_path:
+            self._set_status("Import audio before previewing a cue")
+            return
         cue = self.project.cues[row]
+        try:
+            self._get_playback_service().play(
+                Path(self.project.audio_path),
+                cue.start,
+                cue.end,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._set_status(f"Failed to preview cue: {exc}")
+            return
         self.cuePlaybackRequested.emit(cue.start, cue.end)
         self._set_status(f"Previewing cue {cue.id}")
+
+    def _get_playback_service(self):
+        if self.playback_service is None:
+            self.playback_service = LocalPlaybackService(self)
+        return self.playback_service
 
     def _start_worker(self, stage: str, project_snapshot: Project, task) -> None:
         if self._worker_thread is not None:
@@ -433,6 +454,7 @@ class MainWindow(QMainWindow):
         worker.finished.connect(self._on_worker_finished, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._on_thread_finished, Qt.ConnectionType.QueuedConnection)
         thread.finished.connect(thread.deleteLater)
 
         self._worker_thread = thread
@@ -464,10 +486,20 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_worker_finished(self) -> None:
-        self._worker_thread = None
         self._worker = None
+
+    @Slot()
+    def _on_thread_finished(self) -> None:
+        self._worker_thread = None
         self._active_worker_revision = None
         self._set_busy(False, None)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._worker_thread is not None:
+            self._set_status("Wait for the current task to finish before closing")
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     @Slot(int, str)
     def _update_progress(self, percent: int, message: str) -> None:

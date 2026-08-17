@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,87 @@ def test_save_project_and_load_project_round_trip_all_fields(tmp_path: Path):
     loaded = load_project(project_path)
 
     assert loaded == project
+    assert json.loads(project_path.read_text(encoding="utf-8"))["schema_version"] == 1
+
+
+def test_load_project_migrates_unversioned_legacy_defaults(tmp_path: Path):
+    project_path = tmp_path / "legacy-project.json"
+    project_path.write_text(
+        json.dumps(
+            {
+                "audio_path": "audio.wav",
+                "image_path": "cover.png",
+                "cues": [
+                    {
+                        "id": 1,
+                        "start": 0,
+                        "end": 1.5,
+                        "japanese_recognized": "recognized text",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_project(project_path)
+
+    assert loaded.script_path is None
+    assert loaded.settings == {}
+    assert loaded.cues == [
+        SubtitleCue(
+            id=1,
+            start=0.0,
+            end=1.5,
+            japanese_script="",
+            japanese_recognized="recognized text",
+            chinese="",
+            confidence=None,
+            source="asr",
+            reviewed=False,
+        )
+    ]
+
+
+def test_load_project_rejects_newer_schema_versions(tmp_path: Path):
+    project_path = tmp_path / "future-project.json"
+    project_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "audio_path": "audio.wav",
+                "image_path": "cover.png",
+                "script_path": None,
+                "cues": [],
+                "settings": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectFormatError):
+        load_project(project_path)
+
+
+def test_load_project_rejects_unknown_fields_in_current_schema(tmp_path: Path):
+    project_path = tmp_path / "unknown-field-project.json"
+    project_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "audio_path": "audio.wav",
+                "image_path": "cover.png",
+                "script_path": None,
+                "cues": [],
+                "settings": {},
+                "future_data": {"keep": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectFormatError):
+        load_project(project_path)
 
 
 def test_load_project_raises_project_format_error_for_malformed_json(tmp_path: Path):
@@ -140,7 +222,7 @@ def test_load_project_rejects_bool_for_numeric_cue_fields(
         "settings": {},
     }
     payload["cues"][0][field] = value
-    project_path.write_text(__import__("json").dumps(payload), encoding="utf-8")
+    project_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ProjectFormatError) as exc_info:
         load_project(project_path)
