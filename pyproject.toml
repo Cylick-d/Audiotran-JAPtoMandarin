@@ -7,7 +7,7 @@ name = "audiotran"
 version = "0.1.0"
 description = "Desktop audio subtitle tool"
 requires-python = ">=3.11"
-dependencies = ["PySide6>=6.9"]
+dependencies = ["PySide6>=6.9", "faster-whisper>=1.2.0"]
 
 [project.scripts]
 audiotran = "audiotran.__main__:main"

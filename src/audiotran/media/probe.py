@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +24,7 @@ class MediaProbeError(ValueError):
 def probe_media(path: Path, ffprobe_bin: str = "ffprobe") -> MediaInfo:
     path = Path(path)
     command = [
-        *shlex.split(ffprobe_bin, posix=False),
+        ffprobe_bin,
         "-v",
         "error",
         "-print_format",
