@@ -278,6 +278,23 @@ def _write_broken_project(path: Path) -> Path:
     return path
 
 
+def test_open_project_keeps_valid_project_when_script_file_is_missing(tmp_path: Path):
+    project_path = tmp_path / "project.json"
+    missing_script_path = tmp_path / "missing-script.txt"
+    project = make_project(cues=[make_cue()], script_path=str(missing_script_path))
+    save_project(project, project_path)
+    window = build_window()
+
+    window.open_project(project_path)
+
+    assert window.current_project_path == project_path
+    assert window.project.script_path == str(missing_script_path)
+    assert window.project.cues[0].japanese_script == "script text"
+    assert window._script_text == ""
+    assert "Opened project project.json" in window.statusBar().currentMessage()
+    assert "script" in window.preview_panel.status_label.text().lower()
+
+
 def test_save_project_reports_recoverable_error(tmp_path: Path):
     project_service = FakeProjectService()
     project_service.save_project_error = OSError("disk full")

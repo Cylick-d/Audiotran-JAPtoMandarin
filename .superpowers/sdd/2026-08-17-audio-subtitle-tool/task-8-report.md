@@ -167,3 +167,51 @@ Output:
 
 - The new UI tests cover the reviewed threading and recovery paths, but they still stop short of repeated end-user dialog workflows and export-path retries.
 - The unrelated untracked workspace entry `シコらせ西原さん/` is still present and was not changed.
+
+## Review Fix Round 2
+
+### Summary
+
+Adjusted `open_project()` so a valid project JSON load succeeds even when the referenced optional `script_path` cannot be read. The project state and `current_project_path` are now applied first, `_script_text` stays empty when the script is unavailable, and the window shows a recoverable warning instead of failing the open.
+
+### Changed Files
+
+- `src/audiotran/ui/main_window.py`
+- `tests/ui/test_main_window.py`
+
+### Commands And Outputs
+
+#### 1. Focused UI regression tests
+
+Command:
+
+```text
+python -m pytest tests/ui/test_main_window.py -q
+```
+
+Output:
+
+```text
+............                                                             [100%]
+12 passed in 0.96s
+```
+
+#### 2. Full suite regression tests
+
+Command:
+
+```text
+python -m pytest -q
+```
+
+Output:
+
+```text
+...................................................................      [100%]
+67 passed in 2.28s
+```
+
+### Concerns
+
+- The optional-script warning path is now covered, but repeated open/save dialog flows and more involved export retry scenarios still are not deeply exercised.
+- The unrelated untracked workspace entry `シコらせ西原さん/` is still present and was not changed.

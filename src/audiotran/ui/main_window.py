@@ -174,17 +174,21 @@ class MainWindow(QMainWindow):
     def open_project(self, path: Path) -> None:
         try:
             project = self.project_service.open_project(Path(path))
-            script_text = self._load_script_text(project.script_path)
         except (OSError, ValueError) as exc:
             self._set_status(f"Failed to open project: {exc}")
             return
 
         self.project = project
         self.current_project_path = Path(path)
-        self._script_text = script_text
+        self._script_text = ""
         self.last_successful_stage = None
         self._mark_project_changed()
         self._refresh_project_view()
+        try:
+            self._script_text = self._load_script_text(project.script_path)
+        except (OSError, ValueError) as exc:
+            self._set_status(f"Opened project {Path(path).name}; script unavailable: {exc}")
+            return
         self._set_status(f"Opened project {Path(path).name}")
 
     @Slot()
