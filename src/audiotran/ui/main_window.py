@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-import inspect
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtCore import QThread, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -56,6 +55,8 @@ class MainWindow(QMainWindow):
         self._worker_thread: QThread | None = None
         self._worker: ProjectWorker | None = None
         self._table_refreshing = False
+        self._project_revision = 0
+        self._active_worker_revision: int | None = None
 
         self.setWindowTitle("audiotran")
         self.resize(1280, 760)
@@ -144,15 +145,22 @@ class MainWindow(QMainWindow):
             settings={"display_mode": "zh"},
         )
 
+    @Slot()
     def new_project(self) -> None:
-        created = self._call_if_available(self.project_service, "new_project")
+        try:
+            created = self.project_service.new_project()
+        except (OSError, ValueError) as exc:
+            self._set_status(f"Failed to create project: {exc}")
+            return
         self.project = created if isinstance(created, Project) else self._empty_project()
         self.current_project_path = None
         self._script_text = ""
         self.last_successful_stage = None
+        self._mark_project_changed()
         self._refresh_project_view()
         self._set_status("Started a new project")
 
+    @Slot()
     def open_project_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -164,18 +172,25 @@ class MainWindow(QMainWindow):
             self.open_project(Path(path))
 
     def open_project(self, path: Path) -> None:
-        project = self._call_if_available(self.project_service, "open_project", path)
-        if not isinstance(project, Project):
-            project = load_project(path)
+        try:
+            project = self.project_service.open_project(Path(path))
+            script_text = self._load_script_text(project.script_path)
+        except (OSError, ValueError) as exc:
+            self._set_status(f"Failed to open project: {exc}")
+            return
+
         self.project = project
         self.current_project_path = Path(path)
-        self._script_text = self._load_script_text_if_available()
-        self._apply_display_mode(self._display_mode())
+        self._script_text = script_text
+        self.last_successful_stage = None
+        self._mark_project_changed()
         self._refresh_project_view()
         self._set_status(f"Opened project {Path(path).name}")
 
+    @Slot()
     def save_project_dialog(self) -> None:
-        if self.current_project_path is None:
+        save_path = self.current_project_path
+        if save_path is None:
             path, _ = QFileDialog.getSaveFileName(
                 self,
                 "Save Project",
@@ -184,19 +199,21 @@ class MainWindow(QMainWindow):
             )
             if not path:
                 return
-            self.current_project_path = Path(path)
-        self.save_project(self.current_project_path)
+            save_path = Path(path)
+        self.save_project(save_path)
 
     def save_project(self, path: Path | None) -> None:
         if path is None:
             raise ValueError("a project save path is required")
-        if self._has_callable(self.project_service, "save_project"):
-            self._call_if_available(self.project_service, "save_project", self.project, Path(path))
-        else:
-            save_project(self.project, Path(path))
+        try:
+            self.project_service.save_project(self.project, Path(path))
+        except (OSError, ValueError) as exc:
+            self._set_status(f"Failed to save project: {exc}")
+            return
         self.current_project_path = Path(path)
         self._set_status(f"Saved project {Path(path).name}")
 
+    @Slot()
     def import_audio_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -207,6 +224,7 @@ class MainWindow(QMainWindow):
         if path:
             self.set_audio_path(Path(path))
 
+    @Slot()
     def import_image_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -217,6 +235,7 @@ class MainWindow(QMainWindow):
         if path:
             self.set_image_path(Path(path))
 
+    @Slot()
     def import_script_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -231,6 +250,7 @@ class MainWindow(QMainWindow):
         if not self._validate_extension(path, self.AUDIO_EXTENSIONS, "audio"):
             return False
         self.project.audio_path = str(path)
+        self._mark_project_changed()
         self._refresh_project_view()
         self._set_status(f"Loaded audio {path.name}")
         return True
@@ -239,6 +259,7 @@ class MainWindow(QMainWindow):
         if not self._validate_extension(path, self.IMAGE_EXTENSIONS, "image"):
             return False
         self.project.image_path = str(path)
+        self._mark_project_changed()
         self._refresh_project_view()
         self._set_status(f"Loaded image {path.name}")
         return True
@@ -246,12 +267,20 @@ class MainWindow(QMainWindow):
     def set_script_path(self, path: Path) -> bool:
         if not self._validate_extension(path, self.SCRIPT_EXTENSIONS, "script"):
             return False
+        try:
+            script_text = self.project_service.load_script(Path(path))
+        except (OSError, ValueError) as exc:
+            self._set_status(f"Failed to load script: {exc}")
+            return False
+
         self.project.script_path = str(path)
-        self._script_text = self._read_script(path)
+        self._script_text = script_text
+        self._mark_project_changed()
         self._refresh_project_view()
         self._set_status(f"Loaded script {path.name}")
         return True
 
+    @Slot()
     def run_script_alignment(self) -> None:
         if not self.project.script_path:
             self._set_status("Import a script before running alignment")
@@ -259,22 +288,48 @@ class MainWindow(QMainWindow):
         if not self.project.cues:
             self._set_status("Run ASR before aligning a script")
             return
+        try:
+            script_text = self._script_text or self.project_service.load_script(Path(self.project.script_path))
+        except (OSError, ValueError) as exc:
+            self._set_status(f"Failed to load script: {exc}")
+            return
 
-        script_text = self._script_text or self._read_script(Path(self.project.script_path))
-        self._start_worker("alignment", lambda worker: self._align_in_worker(worker, script_text), self._apply_project_result)
+        project_snapshot = self._snapshot_project()
+        self._start_worker(
+            "alignment",
+            project_snapshot,
+            lambda worker, snapshot=project_snapshot, text=script_text: self._align_in_worker(
+                worker,
+                snapshot,
+                text,
+            ),
+        )
 
+    @Slot()
     def run_asr(self) -> None:
         if not self.project.audio_path:
             self._set_status("Import audio before running ASR")
             return
-        self._start_worker("asr", self._transcribe_in_worker, self._apply_project_result)
+        project_snapshot = self._snapshot_project()
+        self._start_worker(
+            "asr",
+            project_snapshot,
+            lambda worker, snapshot=project_snapshot: self._transcribe_in_worker(worker, snapshot),
+        )
 
+    @Slot()
     def run_translation(self) -> None:
         if not self.project.cues:
             self._set_status("Create subtitle cues before translating")
             return
-        self._start_worker("translation", self._translate_in_worker, self._apply_project_result)
+        project_snapshot = self._snapshot_project()
+        self._start_worker(
+            "translation",
+            project_snapshot,
+            lambda worker, snapshot=project_snapshot: self._translate_in_worker(worker, snapshot),
+        )
 
+    @Slot()
     def export_project_dialog(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -289,12 +344,18 @@ class MainWindow(QMainWindow):
         if not self.project.audio_path or not self.project.image_path or not self.project.cues:
             self._set_status("Import audio, image, and subtitles before exporting")
             return
+        project_snapshot = self._snapshot_project()
         self._start_worker(
             "export",
-            lambda worker: self._export_in_worker(worker, output_path),
-            self._handle_export_result,
+            project_snapshot,
+            lambda worker, snapshot=project_snapshot, path=Path(output_path): self._export_in_worker(
+                worker,
+                snapshot,
+                path,
+            ),
         )
 
+    @Slot()
     def split_selected_cue(self) -> None:
         row = self.subtitle_table.currentRow()
         if row < 0 or row >= len(self.project.cues):
@@ -305,10 +366,12 @@ class MainWindow(QMainWindow):
         replacement = split_long_cue(cue)
         self.project.cues[row : row + 1] = replacement
         self._reindex_cues()
+        self._mark_project_changed()
         self._refresh_project_view()
         self.subtitle_table.selectRow(row)
         self._set_status("Split the selected cue")
 
+    @Slot()
     def merge_selected_cues(self) -> None:
         rows = sorted({index.row() for index in self.subtitle_table.selectedIndexes()})
         if len(rows) < 2:
@@ -326,16 +389,21 @@ class MainWindow(QMainWindow):
             japanese_script="".join(cue.japanese_script for cue in selected),
             japanese_recognized="".join(cue.japanese_recognized for cue in selected),
             chinese="".join(cue.chinese for cue in selected),
-            confidence=min((cue.confidence for cue in selected if cue.confidence is not None), default=None),
+            confidence=min(
+                (cue.confidence for cue in selected if cue.confidence is not None),
+                default=None,
+            ),
             source=selected[0].source,
             reviewed=all(cue.reviewed for cue in selected),
         )
         self.project.cues[rows[0] : rows[-1] + 1] = [merged]
         self._reindex_cues()
+        self._mark_project_changed()
         self._refresh_project_view()
         self.subtitle_table.selectRow(rows[0])
         self._set_status("Merged the selected cues")
 
+    @Slot()
     def play_current_cue(self) -> None:
         row = self.subtitle_table.currentRow()
         if row < 0 or row >= len(self.project.cues):
@@ -345,43 +413,59 @@ class MainWindow(QMainWindow):
         self.cuePlaybackRequested.emit(cue.start, cue.end)
         self._set_status(f"Previewing cue {cue.id}")
 
-    def _start_worker(self, stage: str, task, on_success) -> None:
+    def _start_worker(self, stage: str, project_snapshot: Project, task) -> None:
         if self._worker_thread is not None:
             self._set_status("Wait for the current task to finish")
             return
 
+        request_revision = self._project_revision
         thread = QThread(self)
-        worker = ProjectWorker(stage=stage, task=task)
+        worker = ProjectWorker(stage=stage, request_revision=request_revision, task=task)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.progress.connect(self._update_progress)
-        worker.result.connect(lambda outcome: self._handle_worker_result(outcome, on_success))
-        worker.error.connect(lambda message, current_stage=stage: self._handle_worker_error(current_stage, message))
+        worker.progress.connect(self._update_progress, Qt.ConnectionType.QueuedConnection)
+        worker.result.connect(self._on_worker_result, Qt.ConnectionType.QueuedConnection)
+        worker.error.connect(self._on_worker_error, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._on_worker_finished, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_worker)
 
         self._worker_thread = thread
         self._worker = worker
+        self._active_worker_revision = request_revision
         self._set_busy(True, stage)
         thread.start()
 
-    def _clear_worker(self) -> None:
-        self._worker_thread = None
-        self._worker = None
-        self._set_busy(False, None)
-
-    def _handle_worker_result(self, outcome: WorkerResult, on_success) -> None:
-        if outcome.error_message:
+    @Slot(object)
+    def _on_worker_result(self, outcome: WorkerResult) -> None:
+        if outcome.request_revision != self._active_worker_revision:
+            self._set_status(f"Ignored stale {outcome.stage} result")
             return
+        if outcome.request_revision != self._project_revision:
+            self._set_status(f"Ignored stale {outcome.stage} result")
+            return
+
+        if outcome.stage == "export":
+            self._handle_export_result(outcome.payload)
+        else:
+            self._apply_project_result(outcome.payload)
         self.last_successful_stage = outcome.stage
-        on_success(outcome.payload)
         self._set_status(f"Completed {outcome.stage}")
 
-    def _handle_worker_error(self, stage: str, message: str) -> None:
-        self._set_status(f"{stage} failed: {message}")
+    @Slot(object)
+    def _on_worker_error(self, outcome: WorkerResult) -> None:
+        message = outcome.error_message or "worker failed"
+        self._set_status(f"{outcome.stage} failed: {message}")
 
+    @Slot()
+    def _on_worker_finished(self) -> None:
+        self._worker_thread = None
+        self._worker = None
+        self._active_worker_revision = None
+        self._set_busy(False, None)
+
+    @Slot(int, str)
     def _update_progress(self, percent: int, message: str) -> None:
         self.progress_bar.setValue(percent)
         self._set_status(message)
@@ -391,79 +475,94 @@ class MainWindow(QMainWindow):
         if busy:
             self.progress_bar.setValue(0)
             self._set_status(f"Running {stage}")
-        for button in (
+
+        for widget in (
+            self.project_panel.new_button,
+            self.project_panel.open_button,
+            self.project_panel.save_button,
+            self.project_panel.audio_button,
+            self.project_panel.image_button,
+            self.project_panel.script_button,
             self.project_panel.align_button,
             self.project_panel.asr_button,
             self.project_panel.translate_button,
+            self.preview_panel.zh_mode_button,
+            self.preview_panel.bilingual_mode_button,
             self.preview_panel.export_button,
+            self.subtitle_table,
+            self.split_button,
+            self.merge_button,
+            self.play_button,
         ):
-            button.setEnabled(not busy)
+            widget.setEnabled(not busy)
 
-    def _transcribe_in_worker(self, worker: ProjectWorker) -> Project:
+    def _transcribe_in_worker(self, worker: ProjectWorker, project_snapshot: Project) -> Project:
         worker.report_progress(10, "Running speech recognition")
-        transcribe = getattr(self.recognition_service, "transcribe")
-        result = transcribe(Path(self.project.audio_path))
+        result = self.recognition_service.transcribe(Path(project_snapshot.audio_path))
         worker.report_progress(90, "Applying speech recognition output")
 
         if isinstance(result, Project):
             return result
-        project = self._clone_project()
+
+        project = self._snapshot_project(project_snapshot)
         project.cues = result if isinstance(result, list) else list(project.cues)
         for cue in project.cues:
             cue.source = "asr"
         return project
 
-    def _align_in_worker(self, worker: ProjectWorker, script_text: str) -> Project:
+    def _align_in_worker(
+        self,
+        worker: ProjectWorker,
+        project_snapshot: Project,
+        script_text: str,
+    ) -> Project:
         worker.report_progress(10, "Segmenting script")
-        service_method = getattr(self.recognition_service, "align_script", None)
-        project = self._clone_project()
-        if callable(service_method):
-            result = self._call_service_method(service_method, project, script_text)
-            if isinstance(result, Project):
-                return result
-            if isinstance(result, list):
-                project.cues = result
-                return project
+        result = self.recognition_service.align_script(project_snapshot, script_text)
+        if isinstance(result, Project):
+            worker.report_progress(90, "Applied aligned script")
+            return result
+        if isinstance(result, list):
+            project = self._snapshot_project(project_snapshot)
+            project.cues = result
+            worker.report_progress(90, "Applied aligned script")
+            return project
 
         script_segments = segment_text(script_text)
         worker.report_progress(60, "Aligning recognized text with script")
+        project = self._snapshot_project(project_snapshot)
         project.cues = align_script(script_segments, project.cues)
         return project
 
-    def _translate_in_worker(self, worker: ProjectWorker) -> Project:
+    def _translate_in_worker(self, worker: ProjectWorker, project_snapshot: Project) -> Project:
         worker.report_progress(10, "Translating subtitle cues")
-        project = self._clone_project()
+        result = self.translation_service.translate_project(project_snapshot)
+        if isinstance(result, Project):
+            worker.report_progress(90, "Applied translations")
+            return result
 
-        service_method = getattr(self.translation_service, "translate_project", None)
-        if callable(service_method):
-            result = self._call_service_method(service_method, project)
-            if isinstance(result, Project):
-                return result
-
-        texts = [cue.japanese_script or cue.japanese_recognized for cue in project.cues]
-        translator = getattr(self.translation_service, "translate", None)
-        if not callable(translator):
-            raise ValueError("translation service does not provide a translate operation")
-
-        translations = self._call_service_method(translator, TranslationRequest(texts=texts))
-        if not isinstance(translations, list) or len(translations) != len(project.cues):
+        texts = [cue.japanese_script or cue.japanese_recognized for cue in project_snapshot.cues]
+        translations = self.translation_service.translate(TranslationRequest(texts=texts))
+        if len(translations) != len(project_snapshot.cues):
             raise ValueError("translation service returned an unexpected result")
+
+        project = self._snapshot_project(project_snapshot)
         for cue, chinese in zip(project.cues, translations):
             cue.chinese = chinese
         worker.report_progress(90, "Applied translations")
         return project
 
-    def _export_in_worker(self, worker: ProjectWorker, output_path: Path):
+    def _export_in_worker(
+        self,
+        worker: ProjectWorker,
+        project_snapshot: Project,
+        output_path: Path,
+    ):
         worker.report_progress(10, "Preparing subtitle export")
-        mode = self._display_mode()
-
-        service_method = getattr(self.export_service, "export_project", None)
-        if callable(service_method):
-            return self._call_service_method(service_method, self._clone_project(), mode, output_path)
-
-        fallback = getattr(self.export_service, "export", None)
-        if callable(fallback):
-            return self._call_service_method(fallback, self._clone_project(), mode, output_path)
+        mode = self._display_mode(project_snapshot)
+        result = self.export_service.export_project(project_snapshot, mode, output_path)
+        if result is not None:
+            worker.report_progress(90, "Prepared export output")
+            return result
 
         style = SubtitleStyle(
             font_name="Arial",
@@ -473,19 +572,20 @@ class MainWindow(QMainWindow):
             back_color="&H00000000",
         )
         subtitles = {
-            "srt": render_srt(self.project.cues, mode),
-            "ass": render_ass(self.project.cues, mode, style),
+            "srt": render_srt(project_snapshot.cues, mode),
+            "ass": render_ass(project_snapshot.cues, mode, style),
             "output_path": str(output_path),
         }
         worker.report_progress(90, "Prepared subtitle files for export")
         return subtitles
 
-    def _apply_project_result(self, payload) -> None:
+    def _apply_project_result(self, payload: object | None) -> None:
         if isinstance(payload, Project):
             self.project = payload
+            self._mark_project_changed()
         self._refresh_project_view()
 
-    def _handle_export_result(self, _payload) -> None:
+    def _handle_export_result(self, _payload: object | None) -> None:
         self._set_status("Export finished")
 
     def _refresh_project_view(self) -> None:
@@ -495,7 +595,7 @@ class MainWindow(QMainWindow):
             self.project.script_path,
         )
         self._refresh_table()
-        self._apply_display_mode(self._display_mode())
+        self._apply_display_mode(self._display_mode(self.project))
         self._update_preview()
 
     def _refresh_table(self) -> None:
@@ -505,9 +605,12 @@ class MainWindow(QMainWindow):
         finally:
             self._table_refreshing = False
 
+    @Slot()
     def _update_display_mode(self) -> None:
         mode = "bilingual" if self.preview_panel.bilingual_mode_button.isChecked() else "zh"
-        self.project.settings["display_mode"] = mode
+        if self.project.settings.get("display_mode") != mode:
+            self.project.settings["display_mode"] = mode
+            self._mark_project_changed()
         self._update_preview()
 
     def _apply_display_mode(self, mode: str) -> None:
@@ -516,10 +619,11 @@ class MainWindow(QMainWindow):
         else:
             self.preview_panel.zh_mode_button.setChecked(True)
 
-    def _display_mode(self) -> str:
-        stored = self.project.settings.get("display_mode", "zh")
+    def _display_mode(self, project: Project) -> str:
+        stored = project.settings.get("display_mode", "zh")
         return "bilingual" if stored == "bilingual" else "zh"
 
+    @Slot(QTableWidgetItem)
     def _handle_item_changed(self, item: QTableWidgetItem) -> None:
         if self._table_refreshing:
             return
@@ -537,15 +641,19 @@ class MainWindow(QMainWindow):
             cue.chinese = item.text()
         elif column == 6:
             cue.reviewed = item.checkState() == Qt.CheckState.Checked
+        else:
+            return
+        self._mark_project_changed()
         self._update_preview()
 
+    @Slot()
     def _update_preview(self) -> None:
         rows = sorted({index.row() for index in self.subtitle_table.selectedIndexes()})
         cues = [self.project.cues[row] for row in rows if 0 <= row < len(self.project.cues)]
         if not cues:
             cues = self.project.cues
 
-        mode = self._display_mode()
+        mode = self._display_mode(self.project)
         chunks = [self._render_cue_preview(cue, mode) for cue in cues]
         self.preview_panel.set_preview_text("\n\n".join(chunk for chunk in chunks if chunk))
 
@@ -567,55 +675,24 @@ class MainWindow(QMainWindow):
         self.preview_panel.set_status(message)
         self.statusBar().showMessage(message)
 
-    def _clone_project(self) -> Project:
+    def _snapshot_project(self, project: Project | None = None) -> Project:
+        source = self.project if project is None else project
         return Project(
-            audio_path=self.project.audio_path,
-            image_path=self.project.image_path,
-            script_path=self.project.script_path,
-            cues=[replace(cue) for cue in self.project.cues],
-            settings=dict(self.project.settings),
+            audio_path=source.audio_path,
+            image_path=source.image_path,
+            script_path=source.script_path,
+            cues=[replace(cue) for cue in source.cues],
+            settings=dict(source.settings),
         )
 
-    def _read_script(self, path: Path) -> str:
-        result = self._call_if_available(self.project_service, "load_script", path)
-        if isinstance(result, str):
-            return result
-        return read_script(path)
-
-    def _load_script_text_if_available(self) -> str:
-        if not self.project.script_path:
+    def _load_script_text(self, script_path: str | None) -> str:
+        if not script_path:
             return ""
-        path = Path(self.project.script_path)
-        if not path.exists():
-            return ""
-        return self._read_script(path)
+        return self.project_service.load_script(Path(script_path))
 
     def _reindex_cues(self) -> None:
         for index, cue in enumerate(self.project.cues, start=1):
             cue.id = index
 
-    def _call_if_available(self, service, name: str, *args):
-        method = getattr(service, name, None)
-        if callable(method):
-            return self._call_service_method(method, *args)
-        return None
-
-    def _has_callable(self, service, name: str) -> bool:
-        return callable(getattr(service, name, None))
-
-    def _call_service_method(self, method, *args):
-        signature = inspect.signature(method)
-        parameters = list(signature.parameters.values())
-        if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
-            return method(*args)
-        positional_capacity = len(
-            [
-                parameter
-                for parameter in parameters
-                if parameter.kind in (
-                    inspect.Parameter.POSITIONAL_ONLY,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                )
-            ]
-        )
-        return method(*args[:positional_capacity])
+    def _mark_project_changed(self) -> None:
+        self._project_revision += 1
