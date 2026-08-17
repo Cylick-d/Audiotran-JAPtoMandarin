@@ -26,7 +26,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "translation": {
         "provider": "identity",
-        "model_path": "models/translation",
+        "model_path": "../models/translation",
         "loader_module": "",
         "endpoint": "",
         "api_key": "",
@@ -68,13 +68,14 @@ class LazySpeechRecognizer:
 def load_settings(settings_path: Path | None = None) -> dict[str, Any]:
     resolved_path = _resolve_settings_path(settings_path)
     settings = _copy_settings(DEFAULT_SETTINGS)
-    if resolved_path is None or not resolved_path.exists():
-        return settings
+    settings_dir = resolved_path.parent
+    if not resolved_path.exists():
+        return _resolve_runtime_paths(settings, settings_dir)
 
     payload = json.loads(resolved_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"settings file must contain a JSON object: {resolved_path}")
-    return _merge_settings(settings, payload)
+    return _resolve_runtime_paths(_merge_settings(settings, payload), settings_dir)
 
 
 def create_pipeline(settings: dict[str, Any] | None = None) -> PipelineFacade:
@@ -130,14 +131,21 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _resolve_settings_path(settings_path: Path | None) -> Path | None:
+    base_dir = _application_base_dir()
     if settings_path is not None:
-        return Path(settings_path)
+        return _resolve_against_base(Path(settings_path), base_dir)
 
     env_path = os.environ.get("AUDIOTRAN_SETTINGS")
     if env_path:
-        return Path(env_path)
+        return _resolve_against_base(Path(env_path), base_dir)
 
-    return Path("config") / "settings.json"
+    return base_dir / "config" / "settings.json"
+
+
+def _application_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
 
 
 def _configure_qt_platform(environment: dict[str, str]) -> None:
@@ -164,6 +172,53 @@ def _merge_settings(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str
         else:
             base[key] = value
     return base
+
+
+def _resolve_runtime_paths(settings: dict[str, Any], settings_dir: Path) -> dict[str, Any]:
+    resolved = _copy_settings(settings)
+    ffmpeg = resolved.get("ffmpeg", {})
+    recognition = resolved.get("recognition", {})
+    translation = resolved.get("translation", {})
+
+    if isinstance(ffmpeg, dict):
+        _resolve_setting_in_place(ffmpeg, "ffmpeg_bin", settings_dir, allow_bare_name=True)
+        _resolve_setting_in_place(ffmpeg, "ffprobe_bin", settings_dir, allow_bare_name=True)
+    if isinstance(recognition, dict):
+        _resolve_setting_in_place(recognition, "model_name", settings_dir, allow_bare_name=True)
+    if isinstance(translation, dict):
+        _resolve_setting_in_place(translation, "model_path", settings_dir, allow_bare_name=False)
+        _resolve_setting_in_place(translation, "loader_module", settings_dir, allow_bare_name=False)
+
+    return resolved
+
+
+def _resolve_setting_in_place(
+    mapping: dict[str, Any],
+    key: str,
+    settings_dir: Path,
+    *,
+    allow_bare_name: bool,
+) -> None:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return
+    if allow_bare_name and _is_bare_name(value):
+        return
+
+    mapping[key] = str(_resolve_against_base(Path(value), settings_dir))
+
+
+def _resolve_against_base(path: Path, base_dir: Path) -> Path:
+    return path.resolve() if path.is_absolute() else (base_dir / path).resolve()
+
+
+def _is_bare_name(value: str) -> bool:
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return False
+    if value.startswith("."):
+        return False
+    return candidate.parent == Path(".")
 
 
 def _create_translator(settings: dict[str, Any]):

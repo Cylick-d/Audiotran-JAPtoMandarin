@@ -1,3 +1,8 @@
+import json
+import os
+from pathlib import Path
+
+
 def test_package_imports():
     import audiotran
 
@@ -29,8 +34,6 @@ def test_configure_qt_platform_only_for_test_runs():
 
 
 def test_create_main_window_returns_window_with_real_workspace_shell():
-    from pathlib import Path
-
     from audiotran.app import create_main_window
     from audiotran.domain import Project
 
@@ -64,3 +67,83 @@ def test_create_main_window_returns_window_with_real_workspace_shell():
     assert window.windowTitle() == "audiotran"
     window.close()
     window.deleteLater()
+
+
+def test_load_settings_resolves_default_and_nested_relative_paths_from_base_dir(
+    tmp_path: Path, monkeypatch
+):
+    from audiotran.app import load_settings
+
+    app_base = tmp_path / "release"
+    settings_dir = app_base / "config"
+    settings_dir.mkdir(parents=True)
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "ffmpeg": {
+                    "ffmpeg_bin": "../tools/ffmpeg/bin/ffmpeg.exe",
+                    "ffprobe_bin": "../tools/ffmpeg/bin/ffprobe.exe",
+                },
+                "recognition": {
+                    "model_name": "../models/faster-whisper-small",
+                    "device": "cpu",
+                },
+                "translation": {
+                    "provider": "local",
+                    "model_path": "../models/translation",
+                    "loader_module": "../models/translation/loader.py",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    unrelated_cwd = tmp_path / "elsewhere"
+    unrelated_cwd.mkdir()
+    monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.delenv("AUDIOTRAN_SETTINGS", raising=False)
+    monkeypatch.setattr("audiotran.app._application_base_dir", lambda: app_base)
+
+    settings = load_settings()
+
+    assert settings["ffmpeg"]["ffmpeg_bin"] == str(
+        (app_base / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe").resolve()
+    )
+    assert settings["ffmpeg"]["ffprobe_bin"] == str(
+        (app_base / "tools" / "ffmpeg" / "bin" / "ffprobe.exe").resolve()
+    )
+    assert settings["recognition"]["model_name"] == str(
+        (app_base / "models" / "faster-whisper-small").resolve()
+    )
+    assert settings["translation"]["model_path"] == str(
+        (app_base / "models" / "translation").resolve()
+    )
+    assert settings["translation"]["loader_module"] == str(
+        (app_base / "models" / "translation" / "loader.py").resolve()
+    )
+
+
+def test_load_settings_preserves_named_tools_and_model_aliases(tmp_path: Path):
+    from audiotran.app import load_settings
+
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "ffmpeg": {
+                    "ffmpeg_bin": "ffmpeg",
+                    "ffprobe_bin": "ffprobe",
+                },
+                "recognition": {
+                    "model_name": "small",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings["ffmpeg"]["ffmpeg_bin"] == "ffmpeg"
+    assert settings["ffmpeg"]["ffprobe_bin"] == "ffprobe"
+    assert settings["recognition"]["model_name"] == "small"

@@ -14,10 +14,12 @@ Create and activate a virtual environment, then install the project in editable 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-python -m pip install -e .
+python -m pip install -e ".[build]"
 ```
 
 Copy `config/example.settings.json` to `config/settings.json` and update the paths for your machine. You can also point the app at another settings file with `AUDIOTRAN_SETTINGS=C:\path\to\settings.json`.
+
+`config/settings.json` is resolved relative to the executable or project base, not the shell working directory. Any relative `ffmpeg`, `ffprobe`, local model, or local translation loader paths inside that settings file are resolved relative to the settings file's own directory. Absolute paths are preserved, and bare names like `ffmpeg` or `small` keep their normal PATH or model-alias behavior.
 
 ## Windows Runtime Layout
 
@@ -67,7 +69,7 @@ Build the Windows executable with:
 pyinstaller build/windows.spec
 ```
 
-PyInstaller includes the PySide6 runtime plus `config/example.settings.json`. Place your real `config/settings.json`, FFmpeg binaries, and any local model files next to the built app before testing on a clean machine.
+The `build` extra installs `PyInstaller 6.x`, which matches the `PyInstaller.utils.hooks` imports used by `build/windows.spec`. PyInstaller includes the PySide6 runtime plus `config/example.settings.json`. Place your real `config/settings.json`, FFmpeg binaries, and any local model files next to the built app before testing on a clean machine.
 
 ## Tests
 
