@@ -13,7 +13,7 @@ def read_script(path: Path) -> str:
     path = Path(path)
     payload = path.read_bytes()
 
-    for encoding in ("utf-8", "shift_jis", "utf-16"):
+    for encoding in ("utf-8-sig", "utf-8", "shift_jis", "utf-16"):
         try:
             return payload.decode(encoding)
         except UnicodeDecodeError:

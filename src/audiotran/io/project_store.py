@@ -31,10 +31,10 @@ def save_project(project: Project, path: Path) -> None:
             suffix=".tmp",
             delete=False,
         ) as handle:
+            temp_path = Path(handle.name)
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
-            temp_path = Path(handle.name)
 
         os.replace(temp_path, path)
         temp_path = None
@@ -98,7 +98,7 @@ def _cue_from_payload(payload: Any, path: Path) -> SubtitleCue:
         raise ProjectFormatError(path)
 
     confidence = payload.get("confidence")
-    if confidence is not None and not isinstance(confidence, (float, int)):
+    if confidence is not None and not _is_valid_number(confidence):
         raise ProjectFormatError(path)
 
     reviewed = payload.get("reviewed")
@@ -106,9 +106,9 @@ def _cue_from_payload(payload: Any, path: Path) -> SubtitleCue:
         raise ProjectFormatError(path)
 
     return SubtitleCue(
-        id=_require_type(payload, "id", int),
-        start=float(_require_type(payload, "start", (float, int))),
-        end=float(_require_type(payload, "end", (float, int))),
+        id=_require_type(payload, "id", int, reject_bool=True),
+        start=float(_require_type(payload, "start", (float, int), reject_bool=True)),
+        end=float(_require_type(payload, "end", (float, int), reject_bool=True)),
         japanese_script=_require_type(payload, "japanese_script", str),
         japanese_recognized=_require_type(payload, "japanese_recognized", str),
         chinese=_require_type(payload, "chinese", str),
@@ -118,14 +118,23 @@ def _cue_from_payload(payload: Any, path: Path) -> SubtitleCue:
     )
 
 
-def _require_type(payload: dict[str, Any], key: str, expected_type: type[Any] | tuple[type[Any], ...]) -> Any:
+def _require_type(
+    payload: dict[str, Any],
+    key: str,
+    expected_type: type[Any] | tuple[type[Any], ...],
+    reject_bool: bool = False,
+) -> Any:
     value = payload[key]
-    if isinstance(expected_type, tuple):
-        valid = isinstance(value, expected_type)
-    else:
-        valid = isinstance(value, expected_type)
+    valid = isinstance(value, expected_type)
+
+    if reject_bool and isinstance(value, bool):
+        valid = False
 
     if not valid:
         raise TypeError(f"{key} has an invalid type")
 
     return value
+
+
+def _is_valid_number(value: Any) -> bool:
+    return isinstance(value, (float, int)) and not isinstance(value, bool)

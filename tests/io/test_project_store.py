@@ -88,3 +88,61 @@ def test_save_project_keeps_original_file_when_atomic_replace_fails(
         save_project(project, project_path)
 
     assert project_path.read_text(encoding="utf-8") == '{"version":"original"}'
+
+
+def test_save_project_removes_temp_file_when_serialization_fails(tmp_path: Path):
+    project_path = tmp_path / "project.json"
+    project = Project(
+        audio_path="audio.wav",
+        image_path="image.png",
+        script_path=None,
+        cues=[],
+        settings={"bad": {1, 2, 3}},
+    )
+
+    with pytest.raises(TypeError):
+        save_project(project, project_path)
+
+    assert list(tmp_path.glob("project.json.*.tmp")) == []
+    assert not project_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("id", True),
+        ("start", False),
+        ("end", True),
+        ("confidence", False),
+    ],
+)
+def test_load_project_rejects_bool_for_numeric_cue_fields(
+    tmp_path: Path, field: str, value: bool
+):
+    project_path = tmp_path / "project.json"
+    payload = {
+        "audio_path": "audio.wav",
+        "image_path": "image.png",
+        "script_path": None,
+        "cues": [
+            {
+                "id": 1,
+                "start": 0.0,
+                "end": 1.0,
+                "japanese_script": "一行目",
+                "japanese_recognized": "いちぎょうめ",
+                "chinese": "第一行",
+                "confidence": 0.9,
+                "source": "script",
+                "reviewed": True,
+            }
+        ],
+        "settings": {},
+    }
+    payload["cues"][0][field] = value
+    project_path.write_text(__import__("json").dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ProjectFormatError) as exc_info:
+        load_project(project_path)
+
+    assert exc_info.value.path == project_path
