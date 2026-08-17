@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -99,6 +100,26 @@ def test_local_translator_raises_translation_error_for_mismatched_output_count(
         translator.translate(TranslationRequest(texts=["a", "b"], glossary={}))
 
 
+def test_local_translator_failure_leaves_request_texts_unchanged(tmp_path: Path):
+    from audiotran.translation import LocalTranslator, TranslationError, TranslationRequest
+
+    request = TranslationRequest(texts=["そのまま", "維持"], glossary={"維持": "keep"})
+    original_texts = list(request.texts)
+    original_glossary = dict(request.glossary)
+    translator = LocalTranslator(
+        tmp_path / "model.bin",
+        model_loader=lambda model_path: lambda texts, glossary: (_ for _ in ()).throw(
+            RuntimeError("boom")
+        ),
+    )
+
+    with pytest.raises(TranslationError, match="local translation failed"):
+        translator.translate(request)
+
+    assert request.texts == original_texts
+    assert request.glossary == original_glossary
+
+
 def test_online_translator_sends_requested_payload_only_and_enforces_timeout():
     from audiotran.translation import OnlineTranslator, TranslationRequest
 
@@ -164,3 +185,101 @@ def test_online_translator_redacts_api_key_and_raises_stable_error():
 
     assert str(exc_info.value) == "online translation failed"
     assert "secret-key" not in repr(exc_info.value)
+
+
+def test_online_translator_redacts_http_error_without_reconstructing_it():
+    from audiotran.translation import OnlineTranslator, TranslationError, TranslationRequest
+
+    def send(request, *, timeout: float):
+        raise HTTPError(
+            request.full_url,
+            503,
+            "upstream secret-key failed",
+            hdrs=None,
+            fp=None,
+        )
+
+    translator = OnlineTranslator(
+        "https://example.test/translate",
+        "secret-key",
+        sender=send,
+    )
+
+    with pytest.raises(TranslationError) as exc_info:
+        translator.translate(TranslationRequest(texts=["こんにちは"], glossary={}))
+
+    assert str(exc_info.value) == "online translation failed"
+    assert "secret-key" not in repr(exc_info.value)
+
+
+def test_online_translator_rejects_malformed_top_level_json_shape():
+    from audiotran.translation import OnlineTranslator, TranslationError, TranslationRequest
+
+    class Response:
+        status = 200
+
+        def read(self) -> bytes:
+            return json.dumps(["not", "a", "dict"]).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    translator = OnlineTranslator(
+        "https://example.test/translate",
+        "secret-key",
+        sender=lambda request, timeout: Response(),
+    )
+
+    with pytest.raises(TranslationError, match="online translation failed"):
+        translator.translate(TranslationRequest(texts=["こんにちは"], glossary={}))
+
+
+def test_online_translator_rejects_injected_non_2xx_response():
+    from audiotran.translation import OnlineTranslator, TranslationError, TranslationRequest
+
+    class Response:
+        status = 503
+
+        def read(self) -> bytes:
+            return json.dumps({"translations": ["hello"]}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    translator = OnlineTranslator(
+        "https://example.test/translate",
+        "secret-key",
+        sender=lambda request, timeout: Response(),
+    )
+
+    with pytest.raises(TranslationError, match="online translation failed"):
+        translator.translate(TranslationRequest(texts=["こんにちは"], glossary={}))
+
+
+def test_online_translator_failure_leaves_request_texts_unchanged():
+    from audiotran.translation import OnlineTranslator, TranslationError, TranslationRequest
+
+    request = TranslationRequest(texts=["そのまま", "維持"], glossary={"維持": "keep"})
+    original_texts = list(request.texts)
+    original_glossary = dict(request.glossary)
+
+    def send(request, *, timeout: float):
+        raise RuntimeError("secret-key transport failure")
+
+    translator = OnlineTranslator(
+        "https://example.test/translate",
+        "secret-key",
+        sender=send,
+    )
+
+    with pytest.raises(TranslationError, match="online translation failed"):
+        translator.translate(request)
+
+    assert request.texts == original_texts
+    assert request.glossary == original_glossary

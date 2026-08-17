@@ -42,14 +42,17 @@ class OnlineTranslator(Translator):
 
         try:
             with self._sender(http_request, timeout=self._timeout) as response:
+                _validate_response_status(response)
                 body = json.loads(response.read().decode("utf-8"))
         except TranslationError:
             raise
         except Exception as exc:
-            raise TranslationError("online translation failed") from _redact_api_key(
-                exc,
-                self._api_key,
+            raise TranslationError("online translation failed") from RuntimeError(
+                _redact_api_key(str(exc), self._api_key)
             )
+
+        if not isinstance(body, dict):
+            raise TranslationError("online translation failed")
 
         translations = body.get("translations")
         if not isinstance(translations, list) or not all(
@@ -60,6 +63,13 @@ class OnlineTranslator(Translator):
         return _validate_translation_count(translations, len(request.texts))
 
 
-def _redact_api_key(error: Exception, api_key: str) -> Exception:
-    message = str(error).replace(api_key, "[REDACTED]")
-    return error.__class__(message)
+def _validate_response_status(response: Any) -> None:
+    status = getattr(response, "status", None)
+    if status is None and hasattr(response, "getcode"):
+        status = response.getcode()
+    if isinstance(status, int) and not 200 <= status < 300:
+        raise TranslationError("online translation failed")
+
+
+def _redact_api_key(message: str, api_key: str) -> str:
+    return message.replace(api_key, "[REDACTED]")
