@@ -88,3 +88,28 @@ def test_render_ass_includes_style_and_escapes_special_characters():
     assert (
         "Dialogue: 0,0:01:01.00,0:01:02.35,Default,,0,0,0,,brace\\{test\\}\\\\tail\\N第二行"
     ) in rendered
+
+
+def test_render_ass_renders_chinese_only_without_japanese_line():
+    from audiotran.export.subtitles import SubtitleStyle, render_ass
+
+    style = SubtitleStyle(
+        font_name="Noto Sans CJK SC",
+        font_size=28,
+        primary_color="&H00FFFFFF",
+        outline_color="&H00000000",
+        back_color="&H64000000",
+    )
+
+    rendered = render_ass(make_cues(), mode="zh", style=style)
+
+    assert "[Events]" in rendered
+    assert "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text" in rendered
+    assert (
+        "Style: Default,Noto Sans CJK SC,28,&H00FFFFFF,&H000000FF,"
+        "&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1"
+    ) in rendered
+    assert "Dialogue: 0,0:00:01.23,0:00:03.50,Default,,0,0,0,,第一行" in rendered
+    assert "Dialogue: 0,0:01:01.00,0:01:02.35,Default,,0,0,0,,第二行" in rendered
+    assert "最初の行\\N第一行" not in rendered
+    assert "brace\\{test\\}\\\\tail\\N第二行" not in rendered

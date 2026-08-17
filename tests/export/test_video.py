@@ -71,6 +71,14 @@ def test_export_video_invokes_ffmpeg_with_expected_arguments(tmp_path: Path, mon
     assert args.endswith(f"|{output}")
 
 
+def test_build_subtitle_filter_escapes_windows_drive_colon_and_apostrophe():
+    from audiotran.export.video import _build_subtitle_filter
+
+    subtitle = Path(r"C:\Media\it's.ass")
+
+    assert _build_subtitle_filter(subtitle) == "subtitles='C\\:/Media/it\\'s.ass'"
+
+
 def test_export_video_raises_and_writes_log_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from audiotran.export.video import ExportError, export_video
 
