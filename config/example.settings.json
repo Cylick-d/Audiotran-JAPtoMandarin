@@ -1,0 +1,18 @@
+{
+  "ffmpeg": {
+    "ffmpeg_bin": "tools/ffmpeg/bin/ffmpeg.exe",
+    "ffprobe_bin": "tools/ffmpeg/bin/ffprobe.exe"
+  },
+  "recognition": {
+    "model_name": "models/faster-whisper-small",
+    "device": "auto"
+  },
+  "translation": {
+    "provider": "identity",
+    "model_path": "models/translation",
+    "loader_module": "models/translation/loader.py",
+    "endpoint": "",
+    "api_key": "",
+    "timeout": 30.0
+  }
+}
