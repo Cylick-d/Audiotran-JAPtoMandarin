@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from collections.abc import Callable
 
 
 class TranslationError(RuntimeError):
@@ -16,5 +17,9 @@ class TranslationRequest:
 
 class Translator(ABC):
     @abstractmethod
-    def translate(self, request: TranslationRequest) -> list[str]:
+    def translate(
+        self,
+        request: TranslationRequest,
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> list[str]:
         raise NotImplementedError

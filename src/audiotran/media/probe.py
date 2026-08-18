@@ -40,6 +40,8 @@ def probe_media(path: Path, ffprobe_bin: str = "ffprobe") -> MediaInfo:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
         raise MediaProbeError(path) from None

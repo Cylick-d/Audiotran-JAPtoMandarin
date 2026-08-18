@@ -14,6 +14,7 @@ class SpeechRecognitionError(ValueError):
 
 
 TranscriberFactory = Callable[[str, str], Any]
+ProgressCallback = Callable[[int], None]
 
 
 class SpeechRecognizer:
@@ -32,12 +33,19 @@ class SpeechRecognizer:
         except Exception as exc:
             raise SpeechRecognitionError(model_name) from exc
 
-    def transcribe(self, path: Path) -> list[SubtitleCue]:
+    def transcribe(
+        self,
+        path: Path,
+        progress_callback: ProgressCallback | None = None,
+    ) -> list[SubtitleCue]:
         path = Path(path)
-        segments, _info = self._transcriber.transcribe(path)
+        segments, info = self._transcriber.transcribe(path)
+        total_duration = float(getattr(info, "duration", 0.0) or 0.0)
 
         cues: list[SubtitleCue] = []
         for index, segment in enumerate(segments, start=1):
+            if progress_callback is not None and total_duration > 0:
+                progress_callback(min(99, max(1, round(float(segment.end) / total_duration * 100))))
             cues.append(
                 SubtitleCue(
                     id=index,

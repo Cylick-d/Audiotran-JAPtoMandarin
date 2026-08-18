@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from audiotran.domain import Project, SubtitleCue
 from audiotran.export import ExportResult, SubtitleStyle, export_video, render_ass, render_srt
@@ -15,17 +15,33 @@ SubtitleMode = Literal["zh", "bilingual"]
 
 
 class Recognizer(Protocol):
-    def transcribe(self, path: Path) -> list[SubtitleCue]:
+    def transcribe(
+        self,
+        path: Path,
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> list[SubtitleCue]:
         ...
 
 
 class Translator(Protocol):
-    def translate(self, request: TranslationRequest) -> list[str]:
+    def translate(
+        self,
+        request: TranslationRequest,
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> list[str]:
         ...
 
 
 class Exporter(Protocol):
-    def __call__(self, audio: Path, image: Path, subtitle_file: Path, output: Path) -> ExportResult:
+    def __call__(
+        self,
+        audio: Path,
+        image: Path,
+        subtitle_file: Path,
+        output: Path,
+        progress_callback: Callable[[int], None] | None = None,
+        total_duration: float | None = None,
+    ) -> ExportResult:
         ...
 
 
@@ -79,10 +95,16 @@ class PipelineFacade:
     def probe_media(self, path: Path):
         return self._media_probe(Path(path))
 
-    def transcribe(self, path: Path) -> list[SubtitleCue]:
+    def transcribe(
+        self,
+        path: Path,
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> list[SubtitleCue]:
         media_path = Path(path)
         self.probe_media(media_path)
-        return self._recognizer.transcribe(media_path)
+        if progress_callback is None:
+            return self._recognizer.transcribe(media_path)
+        return self._recognizer.transcribe(media_path, progress_callback=progress_callback)
 
     def align_script(self, project: Project, script_text: str) -> Project:
         updated = self._copy_project(project)
@@ -107,11 +129,14 @@ class PipelineFacade:
         project: Project,
         *,
         glossary: dict[str, str] | None = None,
+        progress_callback: Callable[[int], None] | None = None,
     ) -> Project:
         texts = [cue.japanese_script or cue.japanese_recognized for cue in project.cues]
-        translations = self._translator.translate(
-            TranslationRequest(texts=texts, glossary=dict(glossary or {}))
-        )
+        request = TranslationRequest(texts=texts, glossary=dict(glossary or {}))
+        if progress_callback is None:
+            translations = self._translator.translate(request)
+        else:
+            translations = self._translator.translate(request, progress_callback=progress_callback)
         if len(translations) != len(project.cues):
             raise ValueError("translator returned an unexpected result")
 
@@ -126,6 +151,7 @@ class PipelineFacade:
         mode: SubtitleMode | None = None,
         output_path: Path | None = None,
         style: SubtitleStyle | None = None,
+        progress_callback: Callable[[int], None] | None = None,
     ) -> PipelineArtifacts:
         if output_path is None:
             raise ValueError("an output path is required")
@@ -142,12 +168,22 @@ class PipelineFacade:
         self._project_saver(project, project_path)
         srt_path.write_text(render_srt(project.cues, subtitle_mode), encoding="utf-8")
         ass_path.write_text(render_ass(project.cues, subtitle_mode, subtitle_style), encoding="utf-8")
-        export_result = self._exporter(
-            Path(project.audio_path),
-            Path(project.image_path),
-            ass_path,
-            destination,
-        )
+        if progress_callback is None:
+            export_result = self._exporter(
+                Path(project.audio_path),
+                Path(project.image_path),
+                ass_path,
+                destination,
+            )
+        else:
+            export_result = self._exporter(
+                Path(project.audio_path),
+                Path(project.image_path),
+                ass_path,
+                destination,
+                progress_callback,
+                max((cue.end for cue in project.cues), default=None),
+            )
         return PipelineArtifacts(
             project=self._copy_project(project),
             project_path=project_path,

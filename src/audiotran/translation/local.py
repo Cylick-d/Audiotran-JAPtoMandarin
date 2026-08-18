@@ -19,11 +19,23 @@ class LocalTranslator(Translator):
         self._model_loader = model_loader or _missing_model_loader
         self._model: TranslationModel | None = None
 
-    def translate(self, request: TranslationRequest) -> list[str]:
+    def translate(
+        self,
+        request: TranslationRequest,
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> list[str]:
         model = self._get_model()
 
         try:
-            translations = model(list(request.texts), dict(request.glossary))
+            translations: list[str] = []
+            batch_size = 8
+            batches = max(1, (len(request.texts) + batch_size - 1) // batch_size)
+            for batch_index in range(batches):
+                start = batch_index * batch_size
+                batch = list(request.texts[start : start + batch_size])
+                translations.extend(model(batch, dict(request.glossary)))
+                if progress_callback is not None:
+                    progress_callback(round((batch_index + 1) / batches * 100))
         except TranslationError:
             raise
         except Exception as exc:

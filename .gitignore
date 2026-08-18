@@ -1,3 +1,25 @@
 __pycache__/
 .pytest_cache/
+.vs/
 *.pyc
+*.egg-info/
+
+# Local configuration and downloaded runtime assets
+config/settings.json
+models/
+tools/
+
+# Local project outputs and personal media
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.ass
+*.srt
+*.log
+test1.json
+シコらせ西原さん/

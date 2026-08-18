@@ -50,6 +50,18 @@ def test_configure_qt_platform_only_for_test_runs():
     assert test_env["QT_QPA_PLATFORM"] == "offscreen"
 
 
+def test_configure_qt_platform_sets_pyside_plugin_path(monkeypatch, tmp_path):
+    from audiotran.app import _configure_qt_platform
+
+    monkeypatch.setattr("audiotran.app._pyside_plugin_path", lambda: tmp_path)
+    environment = {}
+
+    _configure_qt_platform(environment)
+
+    assert environment["QT_QPA_PLATFORM_PLUGIN_PATH"] == str(tmp_path / "platforms")
+    assert environment["QT_PLUGIN_PATH"] == str(tmp_path)
+
+
 def test_create_main_window_returns_window_with_real_workspace_shell():
     from audiotran.app import create_main_window
     from audiotran.domain import Project
@@ -188,7 +200,7 @@ def test_example_settings_paths_resolve_to_the_documented_release_tree(tmp_path:
         (release_dir / "models" / "faster-whisper-small").resolve()
     )
     assert settings["translation"]["model_path"] == str(
-        (release_dir / "models" / "translation").resolve()
+        (release_dir / "models" / "opus-mt-ja-zh").resolve()
     )
     assert settings["translation"]["loader_module"] == str(
         (release_dir / "models" / "translation" / "loader.py").resolve()

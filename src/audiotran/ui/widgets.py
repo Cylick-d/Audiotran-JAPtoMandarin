@@ -155,9 +155,11 @@ class PreviewPanel(QWidget):
         layout.addWidget(preview_box, 1)
 
         export_row = QHBoxLayout()
+        self.show_all_button = _make_button("show-all-button", "Show All")
         self.export_button = _make_button("export-button", "Export")
         self.status_label = QLabel("Ready")
         self.status_label.setWordWrap(True)
+        export_row.addWidget(self.show_all_button)
         export_row.addWidget(self.export_button)
         export_row.addWidget(self.status_label, 1)
         layout.addLayout(export_row)

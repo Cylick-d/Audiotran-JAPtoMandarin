@@ -8,8 +8,8 @@
     "device": "auto"
   },
   "translation": {
-    "provider": "identity",
-    "model_path": "../models/translation",
+    "provider": "local",
+    "model_path": "../models/opus-mt-ja-zh",
     "loader_module": "../models/translation/loader.py",
     "endpoint": "",
     "api_key": "",

@@ -5,15 +5,15 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
-
-from PySide6.QtWidgets import QApplication
+from typing import TYPE_CHECKING, Any
 
 from audiotran.export import export_video
-from audiotran.media import SpeechRecognizer, probe_media
 from audiotran.pipeline import PipelineFacade
 from audiotran.translation import LocalTranslator, OnlineTranslator, TranslationRequest
-from audiotran.ui.main_window import MainWindow
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication
+    from audiotran.ui.main_window import MainWindow
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "ffmpeg": {
@@ -37,6 +37,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 def create_application(argv: list[str]) -> QApplication:
     _configure_qt_platform(os.environ)
+    from PySide6.QtWidgets import QApplication
 
     application = QApplication.instance()
     if application is None:
@@ -59,10 +60,12 @@ class LazySpeechRecognizer:
         self._device = device
         self._recognizer: SpeechRecognizer | None = None
 
-    def transcribe(self, path: Path):
+    def transcribe(self, path: Path, progress_callback=None):
         if self._recognizer is None:
+            from audiotran.media import SpeechRecognizer
+
             self._recognizer = SpeechRecognizer(self._model_name, device=self._device)
-        return self._recognizer.transcribe(path)
+        return self._recognizer.transcribe(path, progress_callback=progress_callback)
 
 
 def load_settings(settings_path: Path | None = None) -> dict[str, Any]:
@@ -79,6 +82,8 @@ def load_settings(settings_path: Path | None = None) -> dict[str, Any]:
 
 
 def create_pipeline(settings: dict[str, Any] | None = None) -> PipelineFacade:
+    from audiotran.media import SpeechRecognizer, probe_media
+
     resolved_settings = _copy_settings(DEFAULT_SETTINGS if settings is None else settings)
     ffmpeg_settings = resolved_settings.get("ffmpeg", {})
     recognition_settings = resolved_settings.get("recognition", {})
@@ -92,12 +97,14 @@ def create_pipeline(settings: dict[str, Any] | None = None) -> PipelineFacade:
     return PipelineFacade(
         recognizer=recognizer,
         translator=translator,
-        exporter=lambda audio, image, subtitle_file, output: export_video(
+        exporter=lambda audio, image, subtitle_file, output, progress_callback=None, total_duration=None: export_video(
             audio=audio,
             image=image,
             subtitle_file=subtitle_file,
             output=output,
             ffmpeg_bin=str(ffmpeg_settings.get("ffmpeg_bin", "ffmpeg")),
+            progress_callback=progress_callback,
+            total_duration=total_duration,
         ),
         media_probe=lambda path: probe_media(
             path,
@@ -113,6 +120,8 @@ def create_main_window(
     pipeline: PipelineFacade | Any | None = None,
 ) -> MainWindow:
     create_application(argv)
+    from audiotran.ui.main_window import MainWindow
+
     resolved_pipeline = pipeline or create_pipeline(load_settings(settings_path))
     return MainWindow(
         project_service=resolved_pipeline,
@@ -149,10 +158,22 @@ def _application_base_dir() -> Path:
 
 
 def _configure_qt_platform(environment: dict[str, str]) -> None:
-    if "QT_QPA_PLATFORM" in environment:
-        return
-    if "PYTEST_CURRENT_TEST" in environment:
+    plugin_path = _pyside_plugin_path()
+    if plugin_path is not None:
+        if "QT_QPA_PLATFORM_PLUGIN_PATH" not in environment:
+            environment["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(plugin_path / "platforms")
+        if "QT_PLUGIN_PATH" not in environment:
+            environment["QT_PLUGIN_PATH"] = str(plugin_path)
+
+    if "QT_QPA_PLATFORM" not in environment and "PYTEST_CURRENT_TEST" in environment:
         environment["QT_QPA_PLATFORM"] = "offscreen"
+
+
+def _pyside_plugin_path() -> Path | None:
+    import PySide6
+
+    candidate = Path(PySide6.__file__).resolve().parent / "plugins"
+    return candidate if candidate.is_dir() else None
 
 
 def _copy_settings(settings: dict[str, Any]) -> dict[str, Any]:

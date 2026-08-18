@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
 
         self.preview_panel.zh_mode_button.toggled.connect(self._update_display_mode)
         self.preview_panel.bilingual_mode_button.toggled.connect(self._update_display_mode)
+        self.preview_panel.show_all_button.clicked.connect(self._show_all_preview)
         self.preview_panel.export_button.clicked.connect(self.export_project_dialog)
 
         self.subtitle_table.itemChanged.connect(self._handle_item_changed)
@@ -524,6 +525,7 @@ class MainWindow(QMainWindow):
             self.project_panel.translate_button,
             self.preview_panel.zh_mode_button,
             self.preview_panel.bilingual_mode_button,
+            self.preview_panel.show_all_button,
             self.preview_panel.export_button,
             self.subtitle_table,
             self.split_button,
@@ -534,7 +536,19 @@ class MainWindow(QMainWindow):
 
     def _transcribe_in_worker(self, worker: ProjectWorker, project_snapshot: Project) -> Project:
         worker.report_progress(10, "Running speech recognition")
-        result = self.recognition_service.transcribe(Path(project_snapshot.audio_path))
+        progress_callback = lambda percent: worker.report_progress(
+            10 + round(percent * 0.8),
+            f"Recognizing audio ({percent}%)",
+        )
+        try:
+            result = self.recognition_service.transcribe(
+                Path(project_snapshot.audio_path),
+                progress_callback=progress_callback,
+            )
+        except TypeError as exc:
+            if "progress_callback" not in str(exc):
+                raise
+            result = self.recognition_service.transcribe(Path(project_snapshot.audio_path))
         worker.report_progress(90, "Applying speech recognition output")
 
         if isinstance(result, Project):
@@ -571,7 +585,19 @@ class MainWindow(QMainWindow):
 
     def _translate_in_worker(self, worker: ProjectWorker, project_snapshot: Project) -> Project:
         worker.report_progress(10, "Translating subtitle cues")
-        result = self.translation_service.translate_project(project_snapshot)
+        progress_callback = lambda percent: worker.report_progress(
+            10 + round(percent * 0.8),
+            f"Translating ({percent}%)",
+        )
+        try:
+            result = self.translation_service.translate_project(
+                project_snapshot,
+                progress_callback=progress_callback,
+            )
+        except TypeError as exc:
+            if "progress_callback" not in str(exc):
+                raise
+            result = self.translation_service.translate_project(project_snapshot)
         if isinstance(result, Project):
             worker.report_progress(90, "Applied translations")
             return result
@@ -595,7 +621,15 @@ class MainWindow(QMainWindow):
     ):
         worker.report_progress(10, "Preparing subtitle export")
         mode = self._display_mode(project_snapshot)
-        result = self.export_service.export_project(project_snapshot, mode, output_path)
+        result = self.export_service.export_project(
+            project_snapshot,
+            mode,
+            output_path,
+            progress_callback=lambda percent: worker.report_progress(
+                10 + round(percent * 0.8),
+                f"Exporting video ({percent}%)",
+            ),
+        )
         if result is not None:
             worker.report_progress(90, "Prepared export output")
             return result
@@ -692,6 +726,12 @@ class MainWindow(QMainWindow):
         mode = self._display_mode(self.project)
         chunks = [self._render_cue_preview(cue, mode) for cue in cues]
         self.preview_panel.set_preview_text("\n\n".join(chunk for chunk in chunks if chunk))
+
+    @Slot()
+    def _show_all_preview(self) -> None:
+        self.subtitle_table.clearSelection()
+        self._update_preview()
+        self._set_status("Showing all subtitles")
 
     def _render_cue_preview(self, cue: SubtitleCue, mode: str) -> str:
         source_text = cue.japanese_script or cue.japanese_recognized
